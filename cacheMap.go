@@ -155,8 +155,8 @@ func (p *Map[k, v]) GetOrInit(key k, init func() *v) (actual *v, initialized boo
 }
 
 // GetCopyOrInit return the value copy
-// if already exists, return value copy and true
-// if not, use init func and store the new value, return value copy and false
+// if already exists, return value copy and false
+// if not, use init func and store the new value, return value copy and true
 func (p *Map[k, v]) GetCopyOrInit(key k, init func() *v) (actual v, initialized bool) {
 	i := p.Hash(key) & uint32(p.shards-1)
 	p.m[i].Lock.RLock()
