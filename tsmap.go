@@ -33,29 +33,69 @@ func DefaultHash[k comparable](i k) uint32 {
 	return hash
 }
 
+type integer interface {
+	int | uint | int16 | uint16 | int32 | uint32 | int64 | uint64
+}
+
+func DefaultIntHash[k integer](key k) uint32 {
+	key = ^key + (key << 15)
+	key = (key << 15) - key - 1
+	key = key ^ (key >> 12)
+	key = key + (key << 2)
+	key = key ^ (key >> 4)
+	key = key * k(2057)
+	key = (key + (key << 3)) + (key << 11)
+	key = key ^ (key >> 16)
+	return uint32(key)
+}
+
+func DefaultStringHash(s string) uint32 {
+	var hash uint32 = 5381
+	for _, c := range s {
+		hash = ((hash << 5) + hash) + uint32(c)
+	}
+	return hash
+}
+
+func DefaultBytesHash(s []byte) uint32 {
+	var hash uint32 = 5381
+	for _, c := range s {
+		hash = ((hash << 5) + hash) + uint32(c)
+	}
+	return hash
+}
+
 const limit = 200
 
 func (p *Map[k, v]) Free() {
 	if p.shards > limit {
-		wg := sync.WaitGroup{}
-		wg.Add(p.shards)
-		for _, m := range p.m {
-			m := m
-			go func() {
-				m.Lock.Lock()
-				m.InternalMap = make(map[k]*v)
-				m.Lock.Unlock()
-				wg.Done()
-			}()
-		}
-		wg.Wait()
+		p.goFree()
 	} else {
-		for _, m := range p.m {
+		p.free()
+	}
+}
+
+func (p *Map[k, v]) free() {
+	for _, m := range p.m {
+		m.Lock.Lock()
+		m.InternalMap = make(map[k]*v)
+		m.Lock.Unlock()
+	}
+}
+
+func (p *Map[k, v]) goFree() {
+	wg := sync.WaitGroup{}
+	wg.Add(p.shards)
+	for _, m := range p.m {
+		m := m
+		go func() {
 			m.Lock.Lock()
 			m.InternalMap = make(map[k]*v)
 			m.Lock.Unlock()
-		}
+			wg.Done()
+		}()
 	}
+	wg.Wait()
 }
 
 func (p *Map[k, v]) Keys() []k {
