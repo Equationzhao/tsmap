@@ -13,7 +13,6 @@ type Shard[k comparable, v any] struct {
 type Map[k comparable, v any] struct {
 	m      []*Shard[k, v]
 	shards int
-	New    func(k) *v
 	Hash   func(k) uint32
 }
 
@@ -109,15 +108,6 @@ func (p *Map[k, v]) Get(key k) (valuePtr *v, ok bool) {
 	return
 }
 
-func (p *Map[k, v]) GetNew(key k) (valuePtr *v, ok bool) {
-	valuePtr = p.New(key)
-	i := p.Hash(key) & uint32(p.shards-1)
-	p.m[i].Lock.Lock()
-	defer p.m[i].Lock.Unlock()
-	p.m[i].InternalMap[key] = valuePtr
-	return
-}
-
 func (p *Map[k, v]) GetCopy(key k) (value v, ok bool) {
 	i := p.Hash(key) & uint32(p.shards-1)
 	p.m[i].Lock.RLock()
@@ -209,7 +199,6 @@ func NewTSMap[k comparable, v any](len int) *Map[k, v] {
 	m := &Map[k, v]{
 		m:      make([]*Shard[k, v], len),
 		shards: len,
-		New:    func(k) *v { return new(v) },
 		Hash:   DefaultHash[k],
 	}
 
