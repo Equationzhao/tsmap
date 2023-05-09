@@ -271,7 +271,9 @@ func (p *Map[k, v]) GetOrInit(key k, init func() v) (actual v, initialized bool)
 	actual, ok = shard.InternalMap[key]
 	if !ok {
 		// init
+		shard.Unlock()
 		actual = init()
+		shard.Lock()
 		shard.InternalMap[key] = actual
 	}
 	shard.Unlock()
