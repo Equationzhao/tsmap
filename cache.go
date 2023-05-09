@@ -30,10 +30,23 @@ func (i *CacheItem[v]) ExpireIt() {
 	i.Expiration = Expired
 }
 
+type Scanner[k comparable,v any]{
+    toScan  *KVCache
+    Gap     time.Duration
+}
+
+func NewScanner[k comparable,v any](toScan *KVCache[k,v])*Scanner[k,v]{
+   return &Scanner{
+       toScan: toScan, 
+   } 
+}
+
 type KVCache[k comparable, v any] struct {
 	removeWhenGettingAnExpiredItem bool
 	createdAt                      time.Time
 	internal                       *Map[k, *CacheItem[v]]
+    scanner                        *Scanner
+    scannerOnce                    sync.Once
 }
 
 var DefaultShards = 200
@@ -54,15 +67,21 @@ func NewKVCacheWithOption[k comparable, v any](options ...CacheOptions[k, v]) *K
 }
 
 func (c *KVCache[k, v]) Clone() *KVCache[k, v] {
+
+    // wait until scanner sleeps
+
 	return &KVCache[k, v]{
 		removeWhenGettingAnExpiredItem: c.removeWhenGettingAnExpiredItem,
 		createdAt:                      c.createdAt,
 		internal:                       c.internal.Clone(),
+
 	}
 }
 
-type CacheOptions[k comparable, v any] func(cache *KVCache[k, v])
-type ItemOptions[v any] func(cache *CacheItem[v])
+type (
+	CacheOptions[k comparable, v any] func(cache *KVCache[k, v])
+	ItemOptions[v any]                func(cache *CacheItem[v])
+)
 
 func (c *KVCache[k, v]) checkExpireWithNow(value CacheItem[v], now time.Time) bool {
 	switch value.Expiration {
@@ -170,3 +189,15 @@ func WithExpiration[v any](expiration time.Duration) ItemOptions[v] {
 		cache.Expiration = expiration
 	}
 }
+
+func (c *KVCache[k, v]) StartScanning(){}
+
+// use context to StopScanning
+/*
+    select{
+        case <-ticker:
+
+        case <-context stop:
+    }
+*/
+func (c *KVCache[k, v]) StopScanning(){}
