@@ -1,6 +1,7 @@
 package tsmap
 
 import (
+	"context"
 	"sync"
 
 	"github.com/Equationzhao/tsmap/iter"
@@ -10,6 +11,19 @@ import (
 type Shard[k comparable, v any] struct {
 	lock        sync.RWMutex
 	InternalMap map[k]v
+}
+
+func (s *Shard[k, v]) Clone() *Shard[k, v] {
+	s.lock.Lock()
+	m := make(map[k]v, len(s.InternalMap))
+	for k, v := range s.InternalMap {
+		m[k] = v
+	}
+	s.lock.Unlock()
+	return &Shard[k, v]{
+		InternalMap: m,
+		lock:        sync.RWMutex{},
+	}
 }
 
 func (s *Shard[k, v]) isEmpty() bool {
@@ -39,15 +53,57 @@ func (s *Shard[k, v]) RUnlock() {
 }
 
 type Map[k comparable, v any] struct {
-	m      []*Shard[k, v]
-	shards int
-	Hash   func(k) uint64
+	internal []*Shard[k, v]
+	shards   int
+	Hash     func(k) uint64
+}
+
+func (p *Map[k, v]) Clone() *Map[k, v] {
+	m := &Map[k, v]{
+		shards:   p.shards,
+		Hash:     p.Hash,
+		internal: make([]*Shard[k, v], p.shards),
+	}
+	for i := range p.internal {
+		m.internal[i] = p.internal[i].Clone()
+	}
+	return m
+}
+
+func (p *Map[k, v]) IterRemoveIf(fn func(k, v) bool) {
+	for _, m := range p.internal {
+		m.RLock()
+		for k, v := range m.InternalMap {
+			if fn(k, v) {
+				delete(m.InternalMap, k)
+			}
+		}
+		m.RUnlock()
+	}
+}
+
+func (p *Map[k, v]) IterRemoveIfWithCanceler(fn func(k, v) bool, canceler context.Context) {
+	for _, m := range p.internal {
+		m.Lock()
+		for k, v := range m.InternalMap {
+			if fn(k, v) {
+				delete(m.InternalMap, k)
+			}
+		}
+		m.Unlock()
+		select {
+		case <-canceler.Done():
+			return
+		default:
+			continue
+		}
+	}
 }
 
 func (p *Map[k, v]) Len() int {
 	Len := 0
-	for i := range p.m {
-		Len += p.m[i].Len()
+	for i := range p.internal {
+		Len += p.internal[i].Len()
 	}
 	return Len
 }
@@ -71,7 +127,7 @@ func (p *Map[k, v]) Free() {
 }
 
 func (p *Map[k, v]) free() {
-	for _, m := range p.m {
+	for _, m := range p.internal {
 		m.Lock()
 		m.InternalMap = make(map[k]v)
 		m.Unlock()
@@ -81,11 +137,11 @@ func (p *Map[k, v]) free() {
 func (p *Map[k, v]) goFree() {
 	wg := sync.WaitGroup{}
 	wg.Add(p.shards)
-	for i := range p.m {
+	for i := range p.internal {
 		go func(i int) {
-			p.m[i].Lock()
-			p.m[i].InternalMap = make(map[k]v)
-			p.m[i].Unlock()
+			p.internal[i].Lock()
+			p.internal[i].InternalMap = make(map[k]v)
+			p.internal[i].Unlock()
 			wg.Done()
 		}(i)
 	}
@@ -107,8 +163,8 @@ func (p *Map[k, v]) Values() []v {
 }
 
 func (p *Map[k, v]) keys() []k {
-	keys := make([]k, 0, len(p.m)*20)
-	for _, s := range p.m {
+	keys := make([]k, 0, len(p.internal)*20)
+	for _, s := range p.internal {
 		s.RLock()
 		for key := range s.InternalMap {
 			keys = append(keys, key)
@@ -121,24 +177,24 @@ func (p *Map[k, v]) keys() []k {
 func (p *Map[k, v]) goKeys() []k {
 	mu := new(sync.Mutex)
 	length := 0
-	for i := range p.m {
-		length += len(p.m[i].InternalMap)
+	for i := range p.internal {
+		length += len(p.internal[i].InternalMap)
 	}
 	keys := make([]k, 0, length)
 	wg := new(sync.WaitGroup)
 	wg.Add(p.shards)
-	for i := range p.m {
+	for i := range p.internal {
 		go func(i int) {
-			p.m[i].RLock()
+			p.internal[i].RLock()
 			defer wg.Done()
-			keysi := make([]k, 0, p.m[i].Len())
-			for k := range p.m[i].InternalMap {
+			keysi := make([]k, 0, p.internal[i].Len())
+			for k := range p.internal[i].InternalMap {
 				keysi = append(keysi, k)
 			}
 			mu.Lock()
 			keys = append(keys, keysi...)
 			mu.Unlock()
-			p.m[i].RUnlock()
+			p.internal[i].RUnlock()
 		}(i)
 	}
 	wg.Wait()
@@ -146,8 +202,8 @@ func (p *Map[k, v]) goKeys() []k {
 }
 
 func (p *Map[k, v]) values() []v {
-	values := make([]v, 0, len(p.m)*20)
-	for _, s := range p.m {
+	values := make([]v, 0, len(p.internal)*20)
+	for _, s := range p.internal {
 		s.RLock()
 		for _, value := range s.InternalMap {
 			values = append(values, value)
@@ -160,24 +216,24 @@ func (p *Map[k, v]) values() []v {
 func (p *Map[k, v]) goValues() []v {
 	mu := new(sync.Mutex)
 	length := 0
-	for i := range p.m {
-		length += len(p.m[i].InternalMap)
+	for i := range p.internal {
+		length += len(p.internal[i].InternalMap)
 	}
 	values := make([]v, 0, length)
 	wg := new(sync.WaitGroup)
 	wg.Add(p.shards)
-	for i := range p.m {
+	for i := range p.internal {
 		go func(i int) {
-			p.m[i].RLock()
+			p.internal[i].RLock()
 			defer wg.Done()
-			valuesi := make([]v, 0, p.m[i].Len())
-			for _, value := range p.m[i].InternalMap {
+			valuesi := make([]v, 0, p.internal[i].Len())
+			for _, value := range p.internal[i].InternalMap {
 				valuesi = append(valuesi, value)
 			}
 			mu.Lock()
 			values = append(values, valuesi...)
 			mu.Unlock()
-			p.m[i].RUnlock()
+			p.internal[i].RUnlock()
 		}(i)
 	}
 	wg.Wait()
@@ -187,24 +243,24 @@ func (p *Map[k, v]) goValues() []v {
 func (p *Map[k, v]) Pairs() []Pair[k, v] {
 	mu := new(sync.Mutex)
 	length := 0
-	for i := range p.m {
-		length += len(p.m[i].InternalMap)
+	for i := range p.internal {
+		length += len(p.internal[i].InternalMap)
 	}
 	pairs := make([]Pair[k, v], 0, length)
 	wg := new(sync.WaitGroup)
 	wg.Add(p.shards)
-	for i := range p.m {
+	for i := range p.internal {
 		go func(i int) {
-			p.m[i].RLock()
+			p.internal[i].RLock()
 			defer wg.Done()
-			pairi := make([]Pair[k, v], 0, len(p.m[i].InternalMap))
-			for key, value := range p.m[i].InternalMap {
+			pairi := make([]Pair[k, v], 0, len(p.internal[i].InternalMap))
+			for key, value := range p.internal[i].InternalMap {
 				pairi = append(pairi, MakePair(key, value))
 			}
 			mu.Lock()
 			pairs = append(pairs, pairi...)
 			mu.Unlock()
-			p.m[i].RUnlock()
+			p.internal[i].RUnlock()
 		}(i)
 	}
 	wg.Wait()
@@ -282,7 +338,7 @@ func (p *Map[k, v]) GetOrInit(key k, init func() v) (actual v, initialized bool)
 
 func (p *Map[k, v]) getShard(key k) *Shard[k, v] {
 	i := p.Hash(key) & uint64(p.shards-1)
-	return p.m[i]
+	return p.internal[i]
 }
 
 // LoadOrStore returns the existing value for the key if present.
@@ -299,8 +355,8 @@ func (p *Map[k, v]) LoadOrStore(key k, value v) (actual v, loaded bool) {
 }
 
 func (p *Map[k, v]) IsEmpty() bool {
-	for i := range p.m {
-		if !p.m[i].isEmpty() {
+	for i := range p.internal {
+		if !p.internal[i].isEmpty() {
 			return false
 		}
 	}
@@ -327,16 +383,16 @@ func (p *Map[k, v]) Has(key k) bool {
 func NewTSMap[k comparable, v any](len int) *Map[k, v] {
 	hasher := maphash.NewHasher[k]()
 	m := &Map[k, v]{
-		m:      make([]*Shard[k, v], len),
-		shards: len,
-		Hash:   hasher.Hash,
+		internal: make([]*Shard[k, v], len),
+		shards:   len,
+		Hash:     hasher.Hash,
 	}
 
 	wg := sync.WaitGroup{}
 	wg.Add(len)
 	for i := 0; i < len; i++ {
 		go func(i int) {
-			m.m[i] = &Shard[k, v]{InternalMap: make(map[k]v)}
+			m.internal[i] = &Shard[k, v]{InternalMap: make(map[k]v)}
 			wg.Done()
 		}(i)
 	}
