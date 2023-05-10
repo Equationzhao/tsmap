@@ -1,6 +1,7 @@
 package tsmap
 
 import (
+	"context"
 	"sync"
 
 	"github.com/Equationzhao/tsmap/iter"
@@ -78,6 +79,24 @@ func (p *Map[k, v]) IterRemoveIf(fn func(k, v) bool) {
 			}
 		}
 		m.RUnlock()
+	}
+}
+
+func (p *Map[k, v]) IterRemoveIfWithCanceler(fn func(k, v) bool, canceler context.Context) {
+	for _, m := range p.internal {
+		m.Lock()
+		for k, v := range m.InternalMap {
+			if fn(k, v) {
+				delete(m.InternalMap, k)
+			}
+		}
+		m.Unlock()
+		select {
+		case <-canceler.Done():
+			return
+		default:
+			continue
+		}
 	}
 }
 
